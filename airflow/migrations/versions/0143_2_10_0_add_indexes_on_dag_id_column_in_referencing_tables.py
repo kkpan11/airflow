@@ -16,7 +16,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Add indexes on dag_id column in referencing tables.
+"""
+Add indexes on dag_id column in referencing tables.
 
 Revision ID: 0fd0c178cbe8
 Revises: 686269002441
@@ -33,7 +34,7 @@ revision = "0fd0c178cbe8"
 down_revision = "686269002441"
 branch_labels = None
 depends_on = None
-airflow_version = "2.9.2"
+airflow_version = "2.10.0"
 
 
 def upgrade():

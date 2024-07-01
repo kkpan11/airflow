@@ -47,7 +47,7 @@ from airflow.providers.common.sql.operators.sql import (
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook, BigQueryJob
 from airflow.providers.google.cloud.hooks.gcs import GCSHook, _parse_gcs_url
 from airflow.providers.google.cloud.links.bigquery import BigQueryDatasetLink, BigQueryTableLink
-from airflow.providers.google.cloud.openlineage.utils import _BigQueryOpenLineageMixin
+from airflow.providers.google.cloud.openlineage.mixins import _BigQueryOpenLineageMixin
 from airflow.providers.google.cloud.operators.cloud_base import GoogleCloudBaseOperator
 from airflow.providers.google.cloud.triggers.bigquery import (
     BigQueryCheckTrigger,
@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 
     from airflow.models.taskinstancekey import TaskInstanceKey
     from airflow.utils.context import Context
+
 
 BIGQUERY_JOB_DETAILS_LINK_FMT = "https://console.cloud.google.com/bigquery?j={job_id}"
 
@@ -149,7 +150,12 @@ class _BigQueryOperatorsEncryptionConfigurationMixin:
     # annotation of the `self`. Then you can inherit this class in the target operator.
     # e.g: BigQueryCheckOperator, BigQueryTableCheckOperator
     def include_encryption_configuration(  # type:ignore[misc]
-        self: BigQueryCheckOperator | BigQueryTableCheckOperator,
+        self: BigQueryCheckOperator
+        | BigQueryTableCheckOperator
+        | BigQueryValueCheckOperator
+        | BigQueryColumnCheckOperator
+        | BigQueryGetDataOperator
+        | BigQueryIntervalCheckOperator,
         configuration: dict,
         config_key: str,
     ) -> None:
@@ -161,7 +167,8 @@ class _BigQueryOperatorsEncryptionConfigurationMixin:
 class BigQueryCheckOperator(
     _BigQueryDbHookMixin, SQLCheckOperator, _BigQueryOperatorsEncryptionConfigurationMixin
 ):
-    """Performs checks against BigQuery.
+    """
+    Performs checks against BigQuery.
 
     This operator expects a SQL query that returns a single row. Each value on
     that row is evaluated using a Python ``bool`` cast. If any of the values
@@ -205,7 +212,7 @@ class BigQueryCheckOperator(
         Token Creator IAM role to the directly preceding identity, with first
         account from the list granting this role to the originating account. (templated)
     :param labels: a dictionary containing labels for the table, passed to BigQuery.
-    :param encryption_configuration: [Optional] Custom encryption configuration (e.g., Cloud KMS keys).
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
 
         .. code-block:: python
 
@@ -313,7 +320,8 @@ class BigQueryCheckOperator(
             )
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> None:
-        """Act as a callback for when the trigger fires.
+        """
+        Act as a callback for when the trigger fires.
 
         This returns immediately. It relies on trigger to throw an exception,
         otherwise it assumes execution was successful.
@@ -326,8 +334,11 @@ class BigQueryCheckOperator(
         self.log.info("Success.")
 
 
-class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
-    """Perform a simple value check using sql code.
+class BigQueryValueCheckOperator(
+    _BigQueryDbHookMixin, SQLValueCheckOperator, _BigQueryOperatorsEncryptionConfigurationMixin
+):
+    """
+    Perform a simple value check using sql code.
 
     .. seealso::
         For more information on how to use this operator, take a look at the guide:
@@ -336,6 +347,13 @@ class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
     :param sql: SQL to execute.
     :param use_legacy_sql: Whether to use legacy SQL (true)
         or standard SQL (false).
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
+
+        .. code-block:: python
+
+            encryption_configuration = {
+                "kmsKeyName": "projects/PROJECT/locations/LOCATION/keyRings/KEY_RING/cryptoKeys/KEY",
+            }
     :param gcp_conn_id: (Optional) The connection ID used to connect to Google Cloud.
     :param location: The geographic location of the job. See details at:
         https://cloud.google.com/bigquery/docs/locations#specifying_your_location
@@ -370,6 +388,7 @@ class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
         sql: str,
         pass_value: Any,
         tolerance: Any = None,
+        encryption_configuration: dict | None = None,
         gcp_conn_id: str = "google_cloud_default",
         use_legacy_sql: bool = True,
         location: str | None = None,
@@ -383,6 +402,7 @@ class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
         self.location = location
         self.gcp_conn_id = gcp_conn_id
         self.use_legacy_sql = use_legacy_sql
+        self.encryption_configuration = encryption_configuration
         self.impersonation_chain = impersonation_chain
         self.labels = labels
         self.deferrable = deferrable
@@ -400,6 +420,8 @@ class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
                 "useLegacySql": self.use_legacy_sql,
             },
         }
+
+        self.include_encryption_configuration(configuration, "query")
 
         return hook.insert_job(
             configuration=configuration,
@@ -446,7 +468,8 @@ class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
             raise AirflowException(f"BigQuery job {job.job_id} failed: {job.error_result}")
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> None:
-        """Act as a callback for when the trigger fires.
+        """
+        Act as a callback for when the trigger fires.
 
         This returns immediately. It relies on trigger to throw an exception,
         otherwise it assumes execution was successful.
@@ -460,7 +483,9 @@ class BigQueryValueCheckOperator(_BigQueryDbHookMixin, SQLValueCheckOperator):
         )
 
 
-class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperator):
+class BigQueryIntervalCheckOperator(
+    _BigQueryDbHookMixin, SQLIntervalCheckOperator, _BigQueryOperatorsEncryptionConfigurationMixin
+):
     """
     Check that the values of metrics given as SQL expressions are within a tolerance of the older ones.
 
@@ -481,6 +506,13 @@ class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperat
         between the current day, and the prior days_back.
     :param use_legacy_sql: Whether to use legacy SQL (true)
         or standard SQL (false).
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
+
+        .. code-block:: python
+
+            encryption_configuration = {
+                "kmsKeyName": "projects/PROJECT/locations/LOCATION/keyRings/KEY_RING/cryptoKeys/KEY",
+            }
     :param gcp_conn_id: (Optional) The connection ID used to connect to Google Cloud.
     :param location: The geographic location of the job. See details at:
         https://cloud.google.com/bigquery/docs/locations#specifying_your_location
@@ -520,6 +552,7 @@ class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperat
         gcp_conn_id: str = "google_cloud_default",
         use_legacy_sql: bool = True,
         location: str | None = None,
+        encryption_configuration: dict | None = None,
         impersonation_chain: str | Sequence[str] | None = None,
         labels: dict | None = None,
         deferrable: bool = conf.getboolean("operators", "default_deferrable", fallback=False),
@@ -538,6 +571,7 @@ class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperat
         self.gcp_conn_id = gcp_conn_id
         self.use_legacy_sql = use_legacy_sql
         self.location = location
+        self.encryption_configuration = encryption_configuration
         self.impersonation_chain = impersonation_chain
         self.labels = labels
         self.project_id = project_id
@@ -552,6 +586,7 @@ class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperat
     ) -> BigQueryJob:
         """Submit a new job and get the job id for polling the status using Triggerer."""
         configuration = {"query": {"query": sql, "useLegacySql": self.use_legacy_sql}}
+        self.include_encryption_configuration(configuration, "query")
         return hook.insert_job(
             configuration=configuration,
             project_id=self.project_id or hook.project_id,
@@ -594,7 +629,8 @@ class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperat
             )
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> None:
-        """Act as a callback for when the trigger fires.
+        """
+        Act as a callback for when the trigger fires.
 
         This returns immediately. It relies on trigger to throw an exception,
         otherwise it assumes execution was successful.
@@ -608,7 +644,9 @@ class BigQueryIntervalCheckOperator(_BigQueryDbHookMixin, SQLIntervalCheckOperat
         )
 
 
-class BigQueryColumnCheckOperator(_BigQueryDbHookMixin, SQLColumnCheckOperator):
+class BigQueryColumnCheckOperator(
+    _BigQueryDbHookMixin, SQLColumnCheckOperator, _BigQueryOperatorsEncryptionConfigurationMixin
+):
     """
     Subclasses the SQLColumnCheckOperator in order to provide a job id for OpenLineage to parse.
 
@@ -623,6 +661,13 @@ class BigQueryColumnCheckOperator(_BigQueryDbHookMixin, SQLColumnCheckOperator):
     :param partition_clause: a string SQL statement added to a WHERE clause
         to partition data
     :param gcp_conn_id: (Optional) The connection ID used to connect to Google Cloud.
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
+
+        .. code-block:: python
+
+            encryption_configuration = {
+                "kmsKeyName": "projects/PROJECT/locations/LOCATION/keyRings/KEY_RING/cryptoKeys/KEY",
+            }
     :param use_legacy_sql: Whether to use legacy SQL (true)
         or standard SQL (false).
     :param location: The geographic location of the job. See details at:
@@ -650,6 +695,7 @@ class BigQueryColumnCheckOperator(_BigQueryDbHookMixin, SQLColumnCheckOperator):
         partition_clause: str | None = None,
         database: str | None = None,
         accept_none: bool = True,
+        encryption_configuration: dict | None = None,
         gcp_conn_id: str = "google_cloud_default",
         use_legacy_sql: bool = True,
         location: str | None = None,
@@ -671,6 +717,7 @@ class BigQueryColumnCheckOperator(_BigQueryDbHookMixin, SQLColumnCheckOperator):
         self.database = database
         self.accept_none = accept_none
         self.gcp_conn_id = gcp_conn_id
+        self.encryption_configuration = encryption_configuration
         self.use_legacy_sql = use_legacy_sql
         self.location = location
         self.impersonation_chain = impersonation_chain
@@ -683,7 +730,7 @@ class BigQueryColumnCheckOperator(_BigQueryDbHookMixin, SQLColumnCheckOperator):
     ) -> BigQueryJob:
         """Submit a new job and get the job id for polling the status using Trigger."""
         configuration = {"query": {"query": self.sql, "useLegacySql": self.use_legacy_sql}}
-
+        self.include_encryption_configuration(configuration, "query")
         return hook.insert_job(
             configuration=configuration,
             project_id=hook.project_id,
@@ -765,7 +812,7 @@ class BigQueryTableCheckOperator(
         Service Account Token Creator IAM role to the directly preceding identity, with first
         account from the list granting this role to the originating account (templated).
     :param labels: a dictionary containing labels for the table, passed to BigQuery
-    :param encryption_configuration: [Optional] Custom encryption configuration (e.g., Cloud KMS keys).
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
 
         .. code-block:: python
 
@@ -851,7 +898,7 @@ class BigQueryTableCheckOperator(
         self.log.info("All tests have passed")
 
 
-class BigQueryGetDataOperator(GoogleCloudBaseOperator):
+class BigQueryGetDataOperator(GoogleCloudBaseOperator, _BigQueryOperatorsEncryptionConfigurationMixin):
     """
     Fetch data and return it, either from a BigQuery table, or results of a query job.
 
@@ -920,6 +967,13 @@ class BigQueryGetDataOperator(GoogleCloudBaseOperator):
         from the table. (templated)
     :param selected_fields: List of fields to return (comma-separated). If
         unspecified, all fields are returned.
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
+
+        .. code-block:: python
+
+            encryption_configuration = {
+                "kmsKeyName": "projects/PROJECT/locations/LOCATION/keyRings/KEY_RING/cryptoKeys/KEY",
+            }
     :param gcp_conn_id: (Optional) The connection ID used to connect to Google Cloud.
     :param location: The location used for the operation.
     :param impersonation_chain: Optional service account to impersonate using short-term
@@ -964,6 +1018,7 @@ class BigQueryGetDataOperator(GoogleCloudBaseOperator):
         selected_fields: str | None = None,
         gcp_conn_id: str = "google_cloud_default",
         location: str | None = None,
+        encryption_configuration: dict | None = None,
         impersonation_chain: str | Sequence[str] | None = None,
         deferrable: bool = conf.getboolean("operators", "default_deferrable", fallback=False),
         poll_interval: float = 4.0,
@@ -983,6 +1038,7 @@ class BigQueryGetDataOperator(GoogleCloudBaseOperator):
         self.gcp_conn_id = gcp_conn_id
         self.location = location
         self.impersonation_chain = impersonation_chain
+        self.encryption_configuration = encryption_configuration
         self.project_id = project_id
         self.deferrable = deferrable
         self.poll_interval = poll_interval
@@ -996,6 +1052,8 @@ class BigQueryGetDataOperator(GoogleCloudBaseOperator):
     ) -> BigQueryJob:
         get_query = self.generate_query(hook=hook)
         configuration = {"query": {"query": get_query, "useLegacySql": self.use_legacy_sql}}
+        self.include_encryption_configuration(configuration, "query")
+
         """Submit a new job and get the job id for polling the status using Triggerer."""
         return hook.insert_job(
             configuration=configuration,
@@ -1120,7 +1178,8 @@ class BigQueryGetDataOperator(GoogleCloudBaseOperator):
         )
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> Any:
-        """Act as a callback for when the trigger fires.
+        """
+        Act as a callback for when the trigger fires.
 
         This returns immediately. It relies on trigger to throw an exception,
         otherwise it assumes execution was successful.
@@ -1137,7 +1196,8 @@ class BigQueryGetDataOperator(GoogleCloudBaseOperator):
     category=AirflowProviderDeprecationWarning,
 )
 class BigQueryExecuteQueryOperator(GoogleCloudBaseOperator):
-    """Executes BigQuery SQL queries in a specific BigQuery database.
+    """
+    Executes BigQuery SQL queries in a specific BigQuery database.
 
     This operator is deprecated. Please use
     :class:`airflow.providers.google.cloud.operators.bigquery.BigQueryInsertJobOperator`
@@ -1198,7 +1258,7 @@ class BigQueryExecuteQueryOperator(GoogleCloudBaseOperator):
     :param location: The geographic location of the job. Required except for
         US and EU. See details at
         https://cloud.google.com/bigquery/docs/locations#specifying_your_location
-    :param encryption_configuration: [Optional] Custom encryption configuration (e.g., Cloud KMS keys).
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
 
         .. code-block:: python
 
@@ -1356,7 +1416,8 @@ class BigQueryExecuteQueryOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryCreateEmptyTableOperator(GoogleCloudBaseOperator):
-    """Creates a new table in the specified BigQuery dataset, optionally with schema.
+    """
+    Creates a new table in the specified BigQuery dataset, optionally with schema.
 
     The schema to be used for the BigQuery table may be specified in one of
     two ways. You may either directly pass the schema fields in, or you may
@@ -1392,9 +1453,9 @@ class BigQueryCreateEmptyTableOperator(GoogleCloudBaseOperator):
 
         .. seealso::
             https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#timePartitioning
-    :param gcp_conn_id: [Optional] The connection ID used to connect to Google Cloud and
+    :param gcp_conn_id: (Optional) The connection ID used to connect to Google Cloud and
         interact with the Bigquery service.
-    :param google_cloud_storage_conn_id: [Optional] The connection ID used to connect to Google Cloud.
+    :param google_cloud_storage_conn_id: (Optional) The connection ID used to connect to Google Cloud.
         and interact with the Google Cloud Storage service.
     :param labels: a dictionary containing labels for the table, passed to BigQuery
 
@@ -1432,13 +1493,13 @@ class BigQueryCreateEmptyTableOperator(GoogleCloudBaseOperator):
             google_cloud_storage_conn_id="airflow-conn-id",
         )
 
-    :param view: [Optional] A dictionary containing definition for the view.
+    :param view: (Optional) A dictionary containing definition for the view.
         If set, it will create a view instead of a table:
 
         .. seealso::
             https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#ViewDefinition
-    :param materialized_view: [Optional] The materialized view definition.
-    :param encryption_configuration: [Optional] Custom encryption configuration (e.g., Cloud KMS keys).
+    :param materialized_view: (Optional) The materialized view definition.
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
 
         .. code-block:: python
 
@@ -1446,7 +1507,7 @@ class BigQueryCreateEmptyTableOperator(GoogleCloudBaseOperator):
                 "kmsKeyName": "projects/PROJECT/locations/LOCATION/keyRings/KEY_RING/cryptoKeys/KEY",
             }
     :param location: The location used for the operation.
-    :param cluster_fields: [Optional] The fields used for clustering.
+    :param cluster_fields: (Optional) The fields used for clustering.
             BigQuery supports clustering for both partitioned and
             non-partitioned tables.
 
@@ -1605,7 +1666,8 @@ class BigQueryCreateEmptyTableOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryCreateExternalTableOperator(GoogleCloudBaseOperator):
-    """Create a new external table with data from Google Cloud Storage.
+    """
+    Create a new external table with data from Google Cloud Storage.
 
     The schema to be used for the BigQuery table may be specified in one of
     two ways. You may either directly pass the schema fields in, or you may
@@ -1644,7 +1706,7 @@ class BigQueryCreateExternalTableOperator(GoogleCloudBaseOperator):
     :param autodetect: Try to detect schema and format options automatically.
         The schema_fields and schema_object options will be honored when specified explicitly.
         https://cloud.google.com/bigquery/docs/schema-detect#schema_auto-detection_for_external_data_sources
-    :param compression: [Optional] The compression type of the data source.
+    :param compression: (Optional) The compression type of the data source.
         Possible values include GZIP and NONE.
         The default value is NONE.
         This setting is ignored for Google Cloud Bigtable,
@@ -1666,7 +1728,7 @@ class BigQueryCreateExternalTableOperator(GoogleCloudBaseOperator):
         and interact with the Google Cloud Storage service.
     :param src_fmt_configs: configure optional fields specific to the source format
     :param labels: a dictionary containing labels for the table, passed to BigQuery
-    :param encryption_configuration: [Optional] Custom encryption configuration (e.g., Cloud KMS keys).
+    :param encryption_configuration: (Optional) Custom encryption configuration (e.g., Cloud KMS keys).
 
         .. code-block:: python
 
@@ -1900,7 +1962,8 @@ class BigQueryCreateExternalTableOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryDeleteDatasetOperator(GoogleCloudBaseOperator):
-    """Delete an existing dataset from your Project in BigQuery.
+    """
+    Delete an existing dataset from your Project in BigQuery.
 
     https://cloud.google.com/bigquery/docs/reference/rest/v2/datasets/delete
 
@@ -1975,7 +2038,8 @@ class BigQueryDeleteDatasetOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryCreateEmptyDatasetOperator(GoogleCloudBaseOperator):
-    """Create a new dataset for your Project in BigQuery.
+    """
+    Create a new dataset for your Project in BigQuery.
 
     https://cloud.google.com/bigquery/docs/reference/rest/v2/datasets#resource
 
@@ -2098,7 +2162,8 @@ class BigQueryCreateEmptyDatasetOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryGetDatasetOperator(GoogleCloudBaseOperator):
-    """Get the dataset specified by ID.
+    """
+    Get the dataset specified by ID.
 
     .. seealso::
         For more information on how to use this operator, take a look at the guide:
@@ -2162,7 +2227,8 @@ class BigQueryGetDatasetOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryGetDatasetTablesOperator(GoogleCloudBaseOperator):
-    """Retrieve the list of tables in the specified dataset.
+    """
+    Retrieve the list of tables in the specified dataset.
 
     .. seealso::
         For more information on how to use this operator, take a look at the guide:
@@ -2225,7 +2291,8 @@ class BigQueryGetDatasetTablesOperator(GoogleCloudBaseOperator):
     category=AirflowProviderDeprecationWarning,
 )
 class BigQueryPatchDatasetOperator(GoogleCloudBaseOperator):
-    """Patch a dataset for your Project in BigQuery.
+    """
+    Patch a dataset for your Project in BigQuery.
 
     This operator is deprecated. Please use
     :class:`airflow.providers.google.cloud.operators.bigquery.BigQueryUpdateTableOperator`
@@ -2289,7 +2356,8 @@ class BigQueryPatchDatasetOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryUpdateTableOperator(GoogleCloudBaseOperator):
-    """Update a table for your Project in BigQuery.
+    """
+    Update a table for your Project in BigQuery.
 
     Use ``fields`` to specify which fields of table to update. If a field
     is listed in ``fields`` and is ``None`` in table, it will be deleted.
@@ -2376,7 +2444,8 @@ class BigQueryUpdateTableOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryUpdateDatasetOperator(GoogleCloudBaseOperator):
-    """Update a dataset for your Project in BigQuery.
+    """
+    Update a dataset for your Project in BigQuery.
 
     Use ``fields`` to specify which fields of dataset to update. If a field
     is listed in ``fields`` and is ``None`` in dataset, it will be deleted.
@@ -2458,7 +2527,8 @@ class BigQueryUpdateDatasetOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryDeleteTableOperator(GoogleCloudBaseOperator):
-    """Delete a BigQuery table.
+    """
+    Delete a BigQuery table.
 
     .. seealso::
         For more information on how to use this operator, take a look at the guide:
@@ -2516,7 +2586,8 @@ class BigQueryDeleteTableOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryUpsertTableOperator(GoogleCloudBaseOperator):
-    """Upsert to a BigQuery table.
+    """
+    Upsert to a BigQuery table.
 
     .. seealso::
         For more information on how to use this operator, take a look at the guide:
@@ -2593,7 +2664,8 @@ class BigQueryUpsertTableOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryUpdateTableSchemaOperator(GoogleCloudBaseOperator):
-    """Update BigQuery Table Schema.
+    """
+    Update BigQuery Table Schema.
 
     Updates fields on a table schema based on contents of the supplied schema_fields_updates
     parameter. The supplied schema does not need to be complete, if the field
@@ -2666,6 +2738,7 @@ class BigQueryUpdateTableSchemaOperator(GoogleCloudBaseOperator):
         project_id: str = PROVIDE_PROJECT_ID,
         gcp_conn_id: str = "google_cloud_default",
         impersonation_chain: str | Sequence[str] | None = None,
+        location: str | None = None,
         **kwargs,
     ) -> None:
         self.schema_fields_updates = schema_fields_updates
@@ -2675,12 +2748,12 @@ class BigQueryUpdateTableSchemaOperator(GoogleCloudBaseOperator):
         self.project_id = project_id
         self.gcp_conn_id = gcp_conn_id
         self.impersonation_chain = impersonation_chain
+        self.location = location
         super().__init__(**kwargs)
 
     def execute(self, context: Context):
         bq_hook = BigQueryHook(
-            gcp_conn_id=self.gcp_conn_id,
-            impersonation_chain=self.impersonation_chain,
+            gcp_conn_id=self.gcp_conn_id, impersonation_chain=self.impersonation_chain, location=self.location
         )
 
         table = bq_hook.update_table_schema(
@@ -2702,7 +2775,8 @@ class BigQueryUpdateTableSchemaOperator(GoogleCloudBaseOperator):
 
 
 class BigQueryInsertJobOperator(GoogleCloudBaseOperator, _BigQueryOpenLineageMixin):
-    """Execute a BigQuery job.
+    """
+    Execute a BigQuery job.
 
     Waits for the job to complete and returns job id.
     This operator work in the following way:
@@ -2951,7 +3025,8 @@ class BigQueryInsertJobOperator(GoogleCloudBaseOperator, _BigQueryOpenLineageMix
             self._handle_job_error(job)
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> str | None:
-        """Act as a callback for when the trigger fires.
+        """
+        Act as a callback for when the trigger fires.
 
         This returns immediately. It relies on trigger to throw an exception,
         otherwise it assumes execution was successful.
